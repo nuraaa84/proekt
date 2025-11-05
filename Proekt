@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Polygon Area Detector — Мини-сайт</title>
+  <style>
+    :root{
+      --bg:#f7f7fb;
+      --card:#ffffff;
+      --accent:#2b7cff;
+      --muted:#666;
+    }
+    body{
+      margin:0;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background:var(--bg);
+      color:#111;
+    }
+    .container{
+      max-width:980px;
+      margin:28px auto;
+      padding:20px;
+      background:var(--card);
+      box-shadow:0 6px 20px rgba(20,30,50,0.08);
+      border-radius:12px;
+    }
+    h1{ margin:0 0 12px; }
+    .controls{
+      display:flex;
+      gap:20px;
+      align-items:flex-start;
+      flex-wrap:wrap;
+    }
+    .file{
+      display:inline-block;
+      background:var(--accent);
+      color:white;
+      padding:8px 12px;
+      border-radius:8px;
+      cursor:pointer;
+    }
+    .file input{ display:none; }
+    .buttons-row{ display:flex; gap:8px; margin-top:8px; }
+    button{
+      padding:8px 10px;
+      border-radius:8px;
+      border: none;
+      background:#eee;
+      cursor:pointer;
+    }
+    button:disabled{ opacity:0.5; cursor:not-allowed; }
+    .canvas-wrap{
+      margin-top:18px;
+      border:1px solid #eee;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      min-height:360px;
+      background:#fff;
+    }
+    canvas{ max-width:100%; height:auto; display:block; }
+    .output{ margin-top:14px; }
+    #result{ font-size:1.05rem; color:var(--accent); margin-top:6px; }
+    .scale-box{ min-width:320px; }
+    footer{ margin-top:12px; color:var(--muted); font-size:0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Polygon Area Detector</h1>
+
+    <div class="controls">
+      <label class="file">
+        Выбрать изображение
+        <input id="fileInput" type="file" accept="image/*">
+      </label>
+
+      <div class="buttons-row">
+        <button id="detectBtn" disabled>Найти многоугольник</button>
+        <button id="clearBtn" disabled>Очистить</button>
+      </div>
+
+      <div class="scale-box">
+        <h3>Масштаб (опционально)</h3>
+        <p>а) Введите пикселей на 1 единицу:</p>
+        <input id="pxPerUnit" type="number" placeholder="пикселей на 1 единицу (например 50)">
+        <p>или б) отметьте отрезок известной длины:</p>
+        <button id="enableScaleBtn" disabled>Включить масштабирование (2 клика)</button>
+        <input id="realLength" type="number" placeholder="Реальная длина отрезка">
+        <select id="units">
+          <option value="cm">см</option>
+          <option value="m">м</option>
+          <option value="mm">мм</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="canvas-wrap">
+      <canvas id="imageCanvas"></canvas>
+    </div>
+
+    <div class="output">
+      <h3>Результат</h3>
+      <div id="result">Загрузите изображение и нажмите «Найти многоугольник».</div>
+      <div id="debug"></div>
+    </div>
+
+    <footer>
+      <small>Сайт использует OpenCV.js. Для корректной работы выбирайте фото, где многоугольник выделяется контрастом от фона.</small>
+    </footer>
+  </div>
+
+  <!-- OpenCV.js -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady();"></script>
+
+  <script>
+    let img = new Image();
+    let canvas = document.getElementById('imageCanvas');
+    let ctx = canvas.getContext('2d');
+    let fileInput = document.getElementById('fileInput');
+    let detectBtn = document.getElementById('detectBtn');
+    let clearBtn = document.getElementById('clearBtn');
+    let enableScaleBtn = document.getElementById('enableScaleBtn');
+    let pxPerUnitInput = document.getElementById('pxPerUnit');
+    let realLengthInput = document.getElementById('realLength');
+    let unitsSelect = document.getElementById('units');
+    let resultEl = document.getElementById('result');
+    let debugEl = document.getElementById('debug');
+
+    let cvReady = false;
+    function onOpenCvReady(){
+      cvReady = true;
+      debugEl.innerText = 'OpenCV.js загружен.';
+    }
+
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if(!file) return;
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const maxW = 1200;
+        let scale = img.width > maxW ? maxW / img.width : 1;
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        detectBtn.disabled = false;
+        clearBtn.disabled = false;
+        enableScaleBtn.disabled = false;
+        resultEl.innerText = 'Изображение загружено.';
+      };
+      img.src = url;
+    });
+
+    clearBtn.addEventListener('click', () => {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      resultEl.innerText = 'Очистка.';
+      detectBtn.disabled = true;
+      clearBtn.disabled = true;
+      enableScaleBtn.disabled = true;
+    });
+
+    detectBtn.addEventListener('click', () => {
+      if(!cvReady){ alert('OpenCV ещё не загрузился.'); return; }
+      if(canvas.width === 0) return;
+      resultEl.innerText = 'Обработка...';
+      setTimeout(runDetection, 10);
+    });
+
+    function runDetection(){
+      try{
+        let src = cv.imread(canvas);
+        const maxDim = 1000;
+        let scaleFactor = 1;
+        if(Math.max(src.cols, src.rows) > maxDim){
+          scaleFactor = maxDim / Math.max(src.cols, src.rows);
+          let tmp = new cv.Mat();
+          cv.resize(src, tmp, new cv.Size(Math.round(src.cols*scaleFactor), Math.round(src.rows*scaleFactor)), 0, 0, cv.INTER_AREA);
+          src.delete(); src = tmp;
+        }
+
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        let blurred = new cv.Mat();
+        cv.GaussianBlur(gray, blurred, new cv.Size(5,5), 0);
+        let edges = new cv.Mat();
+        cv.Canny(blurred, edges, 50, 150);
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        let maxArea = 0, maxIdx = -1;
+        for(let i=0;i<contours.size();i++){
+          const area = cv.contourArea(contours.get(i), false);
+          if(area > maxArea){ maxArea = area; maxIdx = i; }
+        }
+
+        cv.imshow(canvas, src);
+
+        if(maxIdx === -1){
+          resultEl.innerText = 'Контур не найден.';
+          src.delete(); gray.delete(); blurred.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+          return;
+        }
+
+        let chosen = contours.get(maxIdx);
+        let peri = cv.arcLength(chosen, true);
+        let approx = new cv.Mat();
+        cv.approxPolyDP(chosen, approx, 0.01 * peri, true);
+        let areaPx = Math.abs(cv.contourArea(approx, false));
+
+        let points = [];
+        for(let i=0;i<approx.rows;i++){
+          const x = approx.intPtr(i,0)[0];
+          const y = approx.intPtr(i,0)[1];
+          points.push({x,y});
+        }
+
+        ctx.strokeStyle = 'red';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if(points.length>0){
+          ctx.moveTo(points[0].x, points[0].y);
+          for(let i=1;i<points.length;i++) ctx.lineTo(points[i].x, points[i].y);
+          ctx.closePath(); ctx.stroke();
+          ctx.fillStyle = 'yellow';
+          for(const p of points){
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+            ctx.fill();
+          }
+        }
+
+        let areaCanvasPx = areaPx / (scaleFactor*scaleFactor);
+        let areaStr = `${Math.round(areaCanvasPx)} px²`;
+        let pxPerUnit = Number(pxPerUnitInput.value) || null;
+        let converted = null;
+        if(pxPerUnit && pxPerUnit > 0){
+          let areaInUnits = areaCanvasPx / (pxPerUnit * pxPerUnit);
+          converted = `${areaInUnits.toFixed(4)} ${unitsSelect.value}²`;
+        }
+        resultEl.innerHTML = `<strong>Площадь:</strong> ${areaStr}` + (converted ? `<br><strong>≈</strong> ${converted}` : '');
+
+        src.delete(); gray.delete(); blurred.delete(); edges.delete(); contours.delete(); hierarchy.delete(); chosen.delete(); approx.delete();
+      } catch(err){ resultEl.innerText = 'Ошибка: ' + err; }
+    }
+
+    let scaleMode = false;
+    let clicks = [];
+    enableScaleBtn.addEventListener('click', () => {
+      if(canvas.width === 0) return;
+      scaleMode = !scaleMode;
+      clicks = [];
+      enableScaleBtn.innerText = scaleMode ? 'Отключить масштабирование' : 'Включить масштабирование (2 клика)';
+      canvas.style.cursor = scaleMode ? 'crosshair' : 'default';
+    });
+
+    canvas.addEventListener('click', e => {
+      if(!scaleMode) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      clicks.push({x,y});
+      ctx.fillStyle = 'lime';
+      ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2); ctx.fill();
+
+      if(clicks.length === 2){
+        ctx.strokeStyle = 'lime'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(clicks[0].x, clicks[0].y); ctx.lineTo(clicks[1].x, clicks[1].y); ctx.stroke();
+        const dx = clicks[0].x - clicks[1].x, dy = clicks[0].y - clicks[1].y;
+        const distPx = Math.sqrt(dx*dx + dy*dy);
+        const real = Number(realLengthInput.value);
+        if(!real || real <= 0){
+          resultEl.innerHTML = `Отрезок: ${Math.round(distPx)} px. Введите его реальную длину.`;
+        } else {
+          const pxPerUnit = distPx / real;
+          pxPerUnitInput.value = pxPerUnit.toFixed(4);
+          resultEl.innerHTML = `Масштаб: ${pxPerUnit.toFixed(2)} px/1 ${unitsSelect.value}.`;
+          scaleMode = false;
+          enableScaleBtn.innerText = 'Включить масштабирование (2 клика)';
+          canvas.style.cursor = 'default';
+        }
+        clicks = [];
+      }
+    });
+  </script>
+</body>
+</html>
